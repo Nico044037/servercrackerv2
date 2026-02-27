@@ -5,12 +5,11 @@ import requests
 from mcstatus import JavaServer
 
 # ===== CONFIG =====
-API_URL = "https://web-production-d205.up.railway.app/log"  # NO double slash
+API_URL = "https://web-production-d205.up.railway.app/log"
 API_KEY = "secret123"
 
-THREADS = 80          # Optimal for network scanning
-TIMEOUT = 2           # Never use 0 (causes hanging)
-PORT = 25565
+THREADS = 120        # Faster but still stable
+TIMEOUT = 2          # Never 0 (prevents hanging)
 STATS_INTERVAL = 5
 
 HEADERS = {
@@ -18,34 +17,57 @@ HEADERS = {
     "x-api-key": API_KEY
 }
 
-# ===== STATE =====
-checked_cache = set()
-lock = threading.Lock()
+# ONLY ATERNOS (as requested)
+ATERnos_DOMAINS = ["aternos.me", "aternos.org"]
 
+COMMON_NAMES = [
+    "play", "mc", "survival", "smp", "pvp", "lobby", "hub",
+    "skyblock", "bedwars", "lifesteal", "craft", "mine",
+    "vanilla", "network", "earth", "fun", "official",
+    "anarchy", "minigames", "world", "creative"
+]
+
+PREFIXES = [
+    "nova", "zen", "astro", "pixel", "void", "lunar",
+    "apex", "fusion", "quantum", "echo", "vortex",
+    "stellar", "nebula", "orbit", "cosmic"
+]
+
+SUFFIXES = [
+    "mc", "smp", "pvp", "network", "craft", "realm",
+    "world", "server", "hub", "survival", "online", "live"
+]
+
+# ===== STATE =====
+cache = set()
+lock = threading.Lock()
 checked = 0
 sent = 0
-alive_threads = 0
 
 
-def random_public_ip():
-    """Generate random public IPv4 (skip useless private ranges)"""
-    while True:
-        a = random.randint(1, 223)
-        b = random.randint(0, 255)
-        c = random.randint(0, 255)
-        d = random.randint(1, 254)
+def generate_aternos_name():
+    """High-efficiency Aternos name generator"""
+    style = random.randint(0, 5)
 
-        # Skip private/reserved ranges (major efficiency boost)
-        if (
-            a == 10 or
-            a == 127 or
-            (a == 192 and b == 168) or
-            (a == 172 and 16 <= b <= 31) or
-            a >= 224
-        ):
-            continue
+    if style == 0:
+        return random.choice(COMMON_NAMES)
+    elif style == 1:
+        return f"{random.choice(COMMON_NAMES)}{random.randint(1, 999)}"
+    elif style == 2:
+        return f"{random.choice(PREFIXES)}{random.choice(SUFFIXES)}"
+    elif style == 3:
+        return f"play{random.choice(COMMON_NAMES)}"
+    elif style == 4:
+        return f"{random.choice(PREFIXES)}{random.choice(COMMON_NAMES)}"
+    else:
+        return f"{random.choice(COMMON_NAMES)}{random.choice(SUFFIXES)}"
 
-        return f"{a}.{b}.{c}.{d}:{PORT}"
+
+def generate_aternos_address():
+    """ONLY generates Aternos servers (fast focus scanning)"""
+    name = generate_aternos_name()
+    domain = random.choice(ATERnos_DOMAINS)
+    return f"{name}.{domain}".lower()
 
 
 def send_to_api(address, online, max_players, version):
@@ -57,7 +79,7 @@ def send_to_api(address, online, max_players, version):
                 "players": online,
                 "max_players": max_players,
                 "version": version,
-                "source": "rl-finder"
+                "source": "aternos-fast-finder"
             }
         }
 
@@ -66,83 +88,74 @@ def send_to_api(address, online, max_players, version):
         if r.status_code == 200:
             sent += 1
             print(f"[FOUND] {address} ({online}/{max_players})")
-        elif r.status_code == 403:
-            print("[ERROR] Invalid API Key!")
-        else:
-            print(f"[API ERROR] {r.status_code}")
 
     except requests.exceptions.RequestException:
-        # Railway might sleep, don't kill threads
+        # Railway sleep / network hiccup safe
         pass
 
 
 def worker():
-    global checked, alive_threads
-
-    alive_threads += 1
+    global checked
 
     while True:
         try:
-            address = random_public_ip()
+            address = generate_aternos_address()
 
-            # Avoid duplicate scans (huge efficiency gain)
+            # Prevent duplicate checks (BIG speed gain)
             with lock:
-                if address in checked_cache:
+                if address in cache:
                     continue
-                checked_cache.add(address)
+                cache.add(address)
                 checked += 1
 
             try:
                 server = JavaServer.lookup(address, timeout=TIMEOUT)
                 status = server.status()
             except Exception:
-                continue  # Dead IP / closed port / timeout
+                continue  # dead/offline server
 
             if not status or not status.players:
                 continue
 
             online = status.players.online or 0
             max_players = status.players.max or 0
-
-            # Only send REAL active servers
-            if online <= 0 or max_players <= 0:
-                continue
-
             version = status.version.name if status.version else "unknown"
-            send_to_api(address, online, max_players, version)
+
+            # Only log real servers (faster API filtering)
+            if max_players > 0:
+                send_to_api(address, online, max_players, version)
 
         except Exception:
-            # Never let threads die
+            # Never let threads die (important for long runs)
             continue
 
 
 def stats_loop():
     while True:
         print(
-            f"[STATS] Checked IPs: {checked} | "
-            f"Found Online: {sent} | "
-            f"Unique Targets: {len(checked_cache)} | "
-            f"Threads: {THREADS}"
+            f"[STATS] Checked: {checked} | "
+            f"Found: {sent} | "
+            f"Unique Generated: {len(cache)} | "
+            f"Mode: Aternos Only"
         )
         time.sleep(STATS_INTERVAL)
 
 
 def main():
-    print("=== RL Minecraft Finder (API Mode) ===")
-    print("Mode: Real IP scanning only (no domains)")
-    print(f"API Endpoint: {API_URL}")
+    print("=== FAST ATERNOS ONLY FINDER ===")
+    print("RL Scanning: DISABLED")
+    print("Minehut: DISABLED")
+    print("Domains: aternos.me + aternos.org ONLY")
     print(f"Threads: {THREADS}")
     print(f"Timeout: {TIMEOUT}s\n")
 
     # Start workers
     for _ in range(THREADS):
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
+        threading.Thread(target=worker, daemon=True).start()
 
-    # Start stats thread
+    # Stats thread
     threading.Thread(target=stats_loop, daemon=True).start()
 
-    # Keep main alive
     while True:
         time.sleep(60)
 

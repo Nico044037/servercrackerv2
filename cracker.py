@@ -5,33 +5,37 @@ import requests
 from mcstatus import JavaServer
 
 # ===== CONFIG =====
-API_URL = "https://web-production-d205.up.railway.app/log"
+API_URL = "https://web-production-d205.up.railway.app/log"  # NO double slash
 API_KEY = "secret123"
+
+THREADS = 80          # Optimal for network scanning
+TIMEOUT = 2           # Never use 0 (causes hanging)
+PORT = 25565
+STATS_INTERVAL = 5
 
 HEADERS = {
     "Content-Type": "application/json",
     "x-api-key": API_KEY
 }
 
-THREADS = 120        # Safe for IP scanning
-TIMEOUT = 2          # Fast timeout for dead IPs
-PORT = 25565         # Default Minecraft port
-
-cache = set()
+# ===== STATE =====
+checked_cache = set()
 lock = threading.Lock()
-sent = 0
+
 checked = 0
+sent = 0
+alive_threads = 0
 
 
 def random_public_ip():
-    """Generate random PUBLIC IPv4 (skip useless private ranges)"""
+    """Generate random public IPv4 (skip useless private ranges)"""
     while True:
         a = random.randint(1, 223)
         b = random.randint(0, 255)
         c = random.randint(0, 255)
         d = random.randint(1, 254)
 
-        # Skip private & reserved ranges (huge speed improvement)
+        # Skip private/reserved ranges (major efficiency boost)
         if (
             a == 10 or
             a == 127 or
@@ -53,7 +57,7 @@ def send_to_api(address, online, max_players, version):
                 "players": online,
                 "max_players": max_players,
                 "version": version,
-                "source": "rl-ip-scanner"
+                "source": "rl-finder"
             }
         }
 
@@ -61,29 +65,37 @@ def send_to_api(address, online, max_players, version):
 
         if r.status_code == 200:
             sent += 1
-            print(f"[ONLINE] {address} ({online}/{max_players})")
-    except:
-        pass  # Silent fail if API/railway sleeps
+            print(f"[FOUND] {address} ({online}/{max_players})")
+        elif r.status_code == 403:
+            print("[ERROR] Invalid API Key!")
+        else:
+            print(f"[API ERROR] {r.status_code}")
+
+    except requests.exceptions.RequestException:
+        # Railway might sleep, don't kill threads
+        pass
 
 
 def worker():
-    global checked
+    global checked, alive_threads
+
+    alive_threads += 1
 
     while True:
         try:
             address = random_public_ip()
-            checked += 1
 
-            # Avoid re-checking same IPs
+            # Avoid duplicate scans (huge efficiency gain)
             with lock:
-                if address in cache:
+                if address in checked_cache:
                     continue
-                cache.add(address)
+                checked_cache.add(address)
+                checked += 1
 
             try:
                 server = JavaServer.lookup(address, timeout=TIMEOUT)
                 status = server.status()
-            except:
+            except Exception:
                 continue  # Dead IP / closed port / timeout
 
             if not status or not status.players:
@@ -91,34 +103,48 @@ def worker():
 
             online = status.players.online or 0
             max_players = status.players.max or 0
+
+            # Only send REAL active servers
+            if online <= 0 or max_players <= 0:
+                continue
+
             version = status.version.name if status.version else "unknown"
+            send_to_api(address, online, max_players, version)
 
-            # ONLY log real active servers (with players)
-            if online > 0 and max_players > 0:
-                send_to_api(address, online, max_players, version)
-
-        except:
-            continue  # Never kill worker threads
+        except Exception:
+            # Never let threads die
+            continue
 
 
-def main():
-    print("=== RL Minecraft Scanner (REAL IPs ONLY) ===")
-    print("Mode: IPv4 scanning only")
-    print("Domains: DISABLED")
-    print("Minehut/Aternos: NOT scanned")
-    print(f"Threads: {THREADS}")
-    print(f"Timeout: {TIMEOUT}s\n")
-
-    for _ in range(THREADS):
-        threading.Thread(target=worker, daemon=True).start()
-
+def stats_loop():
     while True:
         print(
             f"[STATS] Checked IPs: {checked} | "
-            f"Online Found: {sent} | "
-            f"Unique IPs: {len(cache)}"
+            f"Found Online: {sent} | "
+            f"Unique Targets: {len(checked_cache)} | "
+            f"Threads: {THREADS}"
         )
-        time.sleep(5)
+        time.sleep(STATS_INTERVAL)
+
+
+def main():
+    print("=== RL Minecraft Finder (API Mode) ===")
+    print("Mode: Real IP scanning only (no domains)")
+    print(f"API Endpoint: {API_URL}")
+    print(f"Threads: {THREADS}")
+    print(f"Timeout: {TIMEOUT}s\n")
+
+    # Start workers
+    for _ in range(THREADS):
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+    # Start stats thread
+    threading.Thread(target=stats_loop, daemon=True).start()
+
+    # Keep main alive
+    while True:
+        time.sleep(60)
 
 
 if __name__ == "__main__":

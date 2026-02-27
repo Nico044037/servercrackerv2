@@ -8,8 +8,8 @@ from mcstatus import JavaServer
 API_URL = "https://web-production-d205.up.railway.app/log"
 API_KEY = "secret123"
 
-THREADS = 120        # Faster but still stable
-TIMEOUT = 2          # Never 0 (prevents hanging)
+THREADS = 100        # Fast but stable
+TIMEOUT = 2          # NEVER use 0 (causes freezes)
 STATS_INTERVAL = 5
 
 HEADERS = {
@@ -44,15 +44,18 @@ lock = threading.Lock()
 checked = 0
 sent = 0
 
+# Reuse HTTP connection (faster than new request each time)
+session = requests.Session()
 
-def generate_aternos_name():
-    """High-efficiency Aternos name generator"""
+
+def generate_name():
+    """Efficient random Aternos-style name generator"""
     style = random.randint(0, 5)
 
     if style == 0:
         return random.choice(COMMON_NAMES)
     elif style == 1:
-        return f"{random.choice(COMMON_NAMES)}{random.randint(1, 999)}"
+        return f"{random.choice(COMMON_NAMES)}{random.randint(1,999)}"
     elif style == 2:
         return f"{random.choice(PREFIXES)}{random.choice(SUFFIXES)}"
     elif style == 3:
@@ -64,10 +67,9 @@ def generate_aternos_name():
 
 
 def generate_aternos_address():
-    """ONLY generates Aternos servers (fast focus scanning)"""
-    name = generate_aternos_name()
+    """ONLY generates Aternos domains (no RL, no minehut)"""
     domain = random.choice(ATERnos_DOMAINS)
-    return f"{name}.{domain}".lower()
+    return f"{generate_name()}.{domain}".lower()
 
 
 def send_to_api(address, online, max_players, version):
@@ -79,18 +81,20 @@ def send_to_api(address, online, max_players, version):
                 "players": online,
                 "max_players": max_players,
                 "version": version,
-                "source": "aternos-fast-finder"
+                "source": "aternos-finder"
             }
         }
 
-        r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=10)
+        r = session.post(API_URL, json=payload, headers=HEADERS, timeout=10)
 
         if r.status_code == 200:
             sent += 1
             print(f"[FOUND] {address} ({online}/{max_players})")
+        elif r.status_code == 403:
+            print("[ERROR] Invalid API Key")
 
     except requests.exceptions.RequestException:
-        # Railway sleep / network hiccup safe
+        # Handles Railway sleep / network hiccups
         pass
 
 
@@ -101,7 +105,7 @@ def worker():
         try:
             address = generate_aternos_address()
 
-            # Prevent duplicate checks (BIG speed gain)
+            # Skip duplicates instantly (major speed gain)
             with lock:
                 if address in cache:
                     continue
@@ -114,19 +118,21 @@ def worker():
             except Exception:
                 continue  # dead/offline server
 
-            if not status or not status.players:
+            if not status:
                 continue
 
-            online = status.players.online or 0
-            max_players = status.players.max or 0
+            players = status.players
+            online = players.online if players else 0
+            max_players = players.max if players else 0
             version = status.version.name if status.version else "unknown"
 
-            # Only log real servers (faster API filtering)
+            # Faster logging mode:
+            # Logs ALL real Aternos servers (even 0 players)
             if max_players > 0:
                 send_to_api(address, online, max_players, version)
 
         except Exception:
-            # Never let threads die (important for long runs)
+            # Never let threads die
             continue
 
 
@@ -134,7 +140,7 @@ def stats_loop():
     while True:
         print(
             f"[STATS] Checked: {checked} | "
-            f"Found: {sent} | "
+            f"Sent to API: {sent} | "
             f"Unique Generated: {len(cache)} | "
             f"Mode: Aternos Only"
         )
@@ -142,7 +148,7 @@ def stats_loop():
 
 
 def main():
-    print("=== FAST ATERNOS ONLY FINDER ===")
+    print("=== FAST ATERNOS FINDER ===")
     print("RL Scanning: DISABLED")
     print("Minehut: DISABLED")
     print("Domains: aternos.me + aternos.org ONLY")
@@ -153,7 +159,7 @@ def main():
     for _ in range(THREADS):
         threading.Thread(target=worker, daemon=True).start()
 
-    # Stats thread
+    # Start stats thread
     threading.Thread(target=stats_loop, daemon=True).start()
 
     while True:
